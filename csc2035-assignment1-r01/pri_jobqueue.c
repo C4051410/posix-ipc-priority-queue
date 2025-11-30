@@ -1,103 +1,177 @@
 /*
  * Replace the following string of 0s with your student number
- * 000000000
+ * c4051410
  */
 #include <stdlib.h>
-#include <stdbool.h>
+#include <string.h>
 #include "pri_jobqueue.h"
 
-/* 
- * TODO: you must implement this function that allocates a job queue and 
- * initialise it.
- * Hint:
- * - see job_new in job.c
+/*
+ * Helper: return pointer to the underlying array
+ */
+static job_t* qarr(pri_jobqueue_t* q) {
+    return q ? q->jobs : NULL;
+}
+
+/*
+ * pri_jobqueue_new
  */
 pri_jobqueue_t* pri_jobqueue_new() {
-    return NULL;
+    pri_jobqueue_t* q = malloc(sizeof(pri_jobqueue_t));
+    if (!q)
+        return NULL;
+    pri_jobqueue_init(q);
+    return q;
 }
 
-/* 
- * TODO: you must implement this function.
+/*
+ * pri_jobqueue_init
  */
-void pri_jobqueue_init(pri_jobqueue_t* pjq) {
-    return;
+void pri_jobqueue_init(pri_jobqueue_t* q) {
+    if (!q)
+        return;
+
+    q->head = 0;
+    q->size = 0;
+
+    /* Initialise all jobs to empty with priority 0 */
+    for (int i = 0; i < PRI_JOBQUEUE_CAPACITY; i++) {
+        job_init(&q->jobs[i]);
+    }
 }
 
-/* 
- * TODO: you must implement this function.
- * Hint:
- *      - if a queue is not empty, and the highest priority job is not in the 
- *      last used slot on the queue, dequeueing a job will result in the 
- *      jobs on the queue having to be re-arranged
- *      - remember that the job returned by this function is a copy of the job
- *      that was on the queue
+/*
+ * pri_jobqueue_is_empty
  */
-job_t* pri_jobqueue_dequeue(pri_jobqueue_t* pjq, job_t* dst) {
-    return NULL;
+bool pri_jobqueue_is_empty(pri_jobqueue_t* q) {
+    if (!q)
+        return true;
+    return q->size == 0;
 }
 
-/* 
- * TODO: you must implement this function.
- * Hints:
- * - if a queue is not full, and if you decide to store the jobs in 
- *      priority order on the queue, enqueuing a job will result in the jobs 
- *      on the queue having to be re-arranged. However, it is not essential to
- *      store jobs in priority order (it simplifies implementation of dequeue
- *      at the expense of extra work in enqueue). It is your choice how 
- *      you implement dequeue (and enqueue) to ensure that jobs are dequeued
- *      by highest priority job first (see pri_jobqueue.h)
- * - remember that the job passed to this function is copied to the 
- *      queue
+/*
+ * pri_jobqueue_is_full
  */
-void pri_jobqueue_enqueue(pri_jobqueue_t* pjq, job_t* job) {
-    return;
-}
-   
-/* 
- * TODO: you must implement this function.
- */
-bool pri_jobqueue_is_empty(pri_jobqueue_t* pjq) {
-    return true;
+bool pri_jobqueue_is_full(pri_jobqueue_t* q) {
+    if (!q)
+        return true;
+    return q->size == PRI_JOBQUEUE_CAPACITY;
 }
 
-/* 
- * TODO: you must implement this function.
+/*
+ * pri_jobqueue_size
  */
-bool pri_jobqueue_is_full(pri_jobqueue_t* pjq) {
-    return true;
+int pri_jobqueue_size(pri_jobqueue_t* q) {
+    if (!q)
+        return -1;
+    return q->size;
 }
 
-/* 
- * TODO: you must implement this function.
- * Hints:
- *      - remember that the job returned by this function is a copy of the 
- *      highest priority job on the queue.
- *      - both pri_jobqueue_peek and pri_jobqueue_dequeue require copying of 
- *      the highest priority job on the queue
+/*
+ * pri_jobqueue_space
  */
-job_t* pri_jobqueue_peek(pri_jobqueue_t* pjq, job_t* dst) {
-    return NULL;
+int pri_jobqueue_space(pri_jobqueue_t* q) {
+    if (!q)
+        return -1;
+    return PRI_JOBQUEUE_CAPACITY - q->size;
 }
 
-/* 
- * TODO: you must implement this function.
+/*
+ * Find index of highest-priority job.
+ * Priority 1 is highest. Lower numerical = higher priority.
+ * If multiple jobs share priority, earliest (lowest index from head) wins.
  */
-int pri_jobqueue_size(pri_jobqueue_t* pjq) {
-    return 0;
+static int find_best(pri_jobqueue_t* q) {
+    int best_i = -1;
+    unsigned int best_pri = 0;  /* 0 = unused */
+
+    for (int i = 0; i < q->size; i++) {
+        int idx = (q->head + i) % PRI_JOBQUEUE_CAPACITY;
+        unsigned int pri = q->jobs[idx].priority;
+
+        if (pri == 0)
+            continue;  /* unused slot */
+
+        if (best_i == -1 || pri < best_pri) {
+            best_pri = pri;
+            best_i = idx;
+        }
+    }
+
+    return best_i;
 }
 
-/* 
- * TODO: you must implement this function.
+/*
+ * pri_jobqueue_peek
  */
-int pri_jobqueue_space(pri_jobqueue_t* pjq) {
-    return 0;
+job_t* pri_jobqueue_peek(pri_jobqueue_t* q, job_t* dst) {
+    if (!q)
+        return NULL;
+    if (q->size == 0)
+        return NULL;
+
+    int best = find_best(q);
+    if (best < 0)
+        return NULL;
+
+    return job_copy(&q->jobs[best], dst);
 }
 
-/* 
- * TODO: you must implement this function.
- *  Hint:
- *      - see pri_jobqeue_new
+/*
+ * pri_jobqueue_dequeue
  */
-void pri_jobqueue_delete(pri_jobqueue_t* pjq) {
-    return;
+job_t* pri_jobqueue_dequeue(pri_jobqueue_t* q, job_t* dst) {
+    if (!q)
+        return NULL;
+    if (q->size == 0)
+        return NULL;
+
+    int best = find_best(q);
+    if (best < 0)
+        return NULL;
+
+    /* Copy to dst */
+    job_t temp;
+    job_copy(&q->jobs[best], &temp);
+
+    /* Remove it by shifting elements to close gap */
+    int last_index = (q->head + q->size - 1) % PRI_JOBQUEUE_CAPACITY;
+
+    /* If best isn't last, shift jobs */
+    while (best != last_index) {
+        int next = (best + 1) % PRI_JOBQUEUE_CAPACITY;
+        q->jobs[best] = q->jobs[next];
+        best = next;
+    }
+
+    /* Decrease size */
+    q->size--;
+
+    /* head stays same */
+
+    return job_copy(&temp, dst);
+}
+
+/*
+ * pri_jobqueue_enqueue
+ */
+void pri_jobqueue_enqueue(pri_jobqueue_t* q, job_t* job) {
+    if (!q || !job)
+        return;
+
+    if (q->size == PRI_JOBQUEUE_CAPACITY)
+        return;
+
+    int pos = (q->head + q->size) % PRI_JOBQUEUE_CAPACITY;
+    job_copy(job, &q->jobs[pos]);
+    q->size++;
+}
+
+/*
+ * pri_jobqueue_delete
+ */
+void pri_jobqueue_delete(pri_jobqueue_t* q) {
+    if (!q)
+        return;
+    free(q);
 }

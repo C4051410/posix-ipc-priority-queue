@@ -1,8 +1,9 @@
 /*
  * Replace the following string of 0s with your student number
- * 000000000
+ * c4051410
  */
 #include "ipc_jobqueue.h"
+#include "proc.h"   // for do_critical_work
 
 /* 
  * DO NOT EDIT the ipc_jobqueue_new function.
@@ -20,74 +21,104 @@ ipc_jobqueue_t* ipc_jobqueue_new(proc_t* proc) {
 }
 
 /* 
- * TODO: you must implement this function.
- * Hints:
- * - this is a wrapper for jobqueue function jobqueue_dequeue
- * - and remember you must call do_critical_work
+ * Wrapper for pri_jobqueue_dequeue + do_critical_work
  */
 job_t* ipc_jobqueue_dequeue(ipc_jobqueue_t* ijq, job_t* dst) {
-    return NULL;
+    if (!ijq)
+        return pri_jobqueue_dequeue(NULL, dst);
+
+    do_critical_work(ijq->proc);
+
+    pri_jobqueue_t* q = (pri_jobqueue_t*) ijq->addr;
+    return pri_jobqueue_dequeue(q, dst);
 }
 
 /* 
- * TODO: you must implement this function.
- * Hint:
- * - see ipc_jobqueue_dequeue hint
+ * Wrapper for pri_jobqueue_enqueue + do_critical_work
  */
 void ipc_jobqueue_enqueue(ipc_jobqueue_t* ijq, job_t* job) {
-    return;
+    if (!ijq) {
+        pri_jobqueue_enqueue(NULL, job);
+        return;
+    }
+
+    do_critical_work(ijq->proc);
+
+    pri_jobqueue_t* q = (pri_jobqueue_t*) ijq->addr;
+    pri_jobqueue_enqueue(q, job);
 }
-    
+
 /* 
- * TODO: you must implement this function.
- * Hint:
- * - see ipc_jobqueue_dequeue hint
+ * Wrapper for pri_jobqueue_is_empty + do_critical_work
  */
 bool ipc_jobqueue_is_empty(ipc_jobqueue_t* ijq) {
-    return true;
+    if (!ijq)
+        return pri_jobqueue_is_empty(NULL);
+
+    do_critical_work(ijq->proc);
+
+    pri_jobqueue_t* q = (pri_jobqueue_t*) ijq->addr;
+    return pri_jobqueue_is_empty(q);
 }
 
 /* 
- * TODO: you must implement this function.
- * Hint:
- * - see ipc_jobqueue_dequeue hint
+ * Wrapper for pri_jobqueue_is_full + do_critical_work
  */
 bool ipc_jobqueue_is_full(ipc_jobqueue_t* ijq) {
-    return true;
+    if (!ijq)
+        return pri_jobqueue_is_full(NULL);
+
+    do_critical_work(ijq->proc);
+
+    pri_jobqueue_t* q = (pri_jobqueue_t*) ijq->addr;
+    return pri_jobqueue_is_full(q);
 }
 
 /* 
- * TODO: you must implement this function.
- * Hint:
- * - see ipc_jobqueue_dequeue hint
+ * Wrapper for pri_jobqueue_peek + do_critical_work
  */
 job_t* ipc_jobqueue_peek(ipc_jobqueue_t* ijq, job_t* dst) {
-    return NULL;
+    if (!ijq)
+        return pri_jobqueue_peek(NULL, dst);
+
+    do_critical_work(ijq->proc);
+
+    pri_jobqueue_t* q = (pri_jobqueue_t*) ijq->addr;
+    return pri_jobqueue_peek(q, dst);
 }
 
 /* 
- * TODO: you must implement this function.
- * Hint:
- * - see ipc_jobqueue_dequeue hint
+ * Wrapper for pri_jobqueue_size + do_critical_work
  */
 int ipc_jobqueue_size(ipc_jobqueue_t* ijq) {
-    return 0;
+    if (!ijq)
+        return pri_jobqueue_size(NULL);
+
+    do_critical_work(ijq->proc);
+
+    pri_jobqueue_t* q = (pri_jobqueue_t*) ijq->addr;
+    return pri_jobqueue_size(q);
 }
 
 /* 
- * TODO: you must implement this function.
- * Hint:
- * - see ipc_jobqueue_dequeue hint
+ * Wrapper for pri_jobqueue_space + do_critical_work
  */
 int ipc_jobqueue_space(ipc_jobqueue_t* ijq) {
-    return 0;
+    if (!ijq)
+        return pri_jobqueue_space(NULL);
+
+    do_critical_work(ijq->proc);
+
+    pri_jobqueue_t* q = (pri_jobqueue_t*) ijq->addr;
+    return pri_jobqueue_space(q);
 }
 
 /* 
- * TODO: you must implement this function.
- * Hint:
- * - look at how the ipc_jobqueue is allocated in ipc_jobqueue_new
+ * Delete the ipc object (which also removes the shared memory).
  */
 void ipc_jobqueue_delete(ipc_jobqueue_t* ijq) {
-    return;
+    if (!ijq)
+        return;
+
+    ipc_delete(ijq);
 }
