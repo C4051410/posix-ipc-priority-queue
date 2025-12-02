@@ -2,233 +2,280 @@
  * Replace the following string of 0s with your student number
  * c4051410
  */
-
+#include <fcntl.h>          /* For O_* constants */
+#include <sys/stat.h>       /* For mode constants */
 #include <semaphore.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <string.h>
-#include <stdlib.h>
-#include <errno.h>
+#include "shobject_name.h"
 #include "sem_jobqueue.h"
-#include "proc.h"
 
-/*
- * Helper for opening or creating a named semaphore.
- * init_value is only used if this process is init.
+/* 
+ * DO NOT EDIT the following declarations that are used to detect
+ * failures in semaphore setup
  */
-static sem_t* open_sem(const char* base, proc_t* proc, unsigned int init_value) {
-    char name[MAX_NAME_SIZE];
-    shobject_name(base, name);
+#define SEM_NEW_FAIL        000
+#define MUTEX_SEM_SUCCESS   001
+#define FULL_SEM_SUCCESS    002
+#define EMPTY_SEM_SUCCESS   004
+#define ALL_SEM_SUCCESS     007
 
-    int flags = O_CREAT;
-    unsigned int mode = S_IRUSR | S_IWUSR;
+/* 
+ * DO NOT EDIT the following semaphore names.
+ */
+static const char* sem_mutex_label = "sjq.mutex";
+static const char* sem_full_label = "sjq.full";
+static const char* sem_empty_label = "sjq.empty";
 
-    sem_t* s = sem_open(name, flags, mode, init_value);
-    return s != SEM_FAILED ? s : NULL;
+/* 
+ * DO NOT EDIT the private helper function sem_new for creating new
+ * semaphores at initialisation
+ */
+static int sem_new(sem_t** sem, const char* sem_label, int init_value, 
+    int success) {
+    char sem_name[MAX_NAME_SIZE];
+    
+    shobject_name(sem_label, sem_name);
+    
+    sem_t* new_sem = sem_open(sem_name, O_CREAT, S_IRWXU, init_value);
+    
+    if (new_sem == SEM_FAILED)
+        return SEM_NEW_FAIL;
+    
+    *sem = new_sem;
+        
+    return success;
 }
 
-/*
- * Helper for unlinking semaphores (used only by init-cleanup)
+/* 
+ * DO NOT EDIT the private helper function sem_delete for closing semaphores
+ * when a sem_jobqueue is deleted.
  */
-static void unlink_sem(const char* base) {
-    char name[MAX_NAME_SIZE];
-    shobject_name(base, name);
-    sem_unlink(name);
+static void sem_delete(sem_t* sem, const char* sem_label) {
+    char sem_name[MAX_NAME_SIZE];
+    sem_close(sem);
+    shobject_name(sem_label, sem_name);
+    sem_unlink(sem_name);
 }
 
-/*
- * sem_jobqueue_new
- *
- * Creates a new shared-memory jobqueue + semaphore monitor.
+/* 
+ * DO NOT EDIT sem_jobqueue_new that creates a new sem_jobqueue_t
+ * and associated semaphores.
+ * You will need to look at this function to see what needs to be deleted, 
+ * freed or closed by sem_jobqueue_delete
  */
 sem_jobqueue_t* sem_jobqueue_new(proc_t* proc) {
-    if (!proc) {
-        errno = EINVAL;
-        return NULL;
-    }
+    sem_jobqueue_t* sjq = (sem_jobqueue_t*) malloc(sizeof(sem_jobqueue_t));
 
-    /* Allocate wrapper struct */
-    sem_jobqueue_t* sjq = malloc(sizeof(sem_jobqueue_t));
     if (!sjq)
         return NULL;
-
-    /* Create underlying shared memory queue */
-    ipc_jobqueue_t* ijq = ipc_jobqueue_new(proc);
-    if (!ijq) {
+        
+    sjq->ijq = ipc_jobqueue_new(proc);   // delays all but init process
+    
+    if (!sjq->ijq) {
         free(sjq);
         return NULL;
     }
-
-    sjq->ijq = ijq;
-
-    /* Initial creation by init process: unlink old semaphores first */
-    if (proc->is_init) {
-        unlink_sem("sjq.mutex");
-        unlink_sem("sjq.full");
-        unlink_sem("sjq.empty");
-    }
-
-    /* Open/create semaphores */
-    sjq->mutex = open_sem("sjq.mutex", proc, 1); /* unlocked */
-    sjq->full  = open_sem("sjq.full",  proc, PRI_JOBQUEUE_CAPACITY); /* capacity = free slots */
-    sjq->empty = open_sem("sjq.empty", proc, 0); /* empty count = 0 initially */
-
-    if (!sjq->mutex || !sjq->full || !sjq->empty) {
-        /* Clean up */
-        if (sjq->mutex) sem_close(sjq->mutex);
-        if (sjq->full)  sem_close(sjq->full);
-        if (sjq->empty) sem_close(sjq->empty);
-        ipc_jobqueue_delete(ijq);
+    
+    int r = sem_new(&sjq->mutex, sem_mutex_label, 1, MUTEX_SEM_SUCCESS);
+    
+    if (r != MUTEX_SEM_SUCCESS) {
+        ipc_jobqueue_delete(sjq->ijq);
         free(sjq);
         return NULL;
     }
-
-    return sjq;
-}
-
-/*
- * sem_jobqueue_enqueue
- *
- * classic producer–consumer monitor pattern
- */
-void sem_jobqueue_enqueue(sem_jobqueue_t* sjq, job_t* job) {
-    if (!sjq || !job)
-        return;
-
-    /* Wait until space exists */
-    sem_wait(sjq->full);
-
-    /* Enter critical section */
+    
     sem_wait(sjq->mutex);
+    
+    r |= sem_new(&sjq->full, sem_full_label, 0, FULL_SEM_SUCCESS)
+            | sem_new(&sjq->empty, sem_empty_label,
+                ipc_jobqueue_space(sjq->ijq), EMPTY_SEM_SUCCESS);
+    
+    if (r & ALL_SEM_SUCCESS) {
+        sem_post(sjq->mutex);
+        return sjq;    // all succeeded
+    }
+    
+    // mutex failures    
+    if (r & FULL_SEM_SUCCESS)
+        sem_delete(sjq->full, sem_full_label);
 
-    /* Critical work simulation */
-    do_critical_work(sjq->ijq->proc);
+    if (r & EMPTY_SEM_SUCCESS)
+        sem_delete(sjq->empty, sem_empty_label);
 
-    /* Perform the enqueue on underlying queue */
-    pri_jobqueue_enqueue((pri_jobqueue_t*) sjq->ijq->addr, job);
-
-    /* Exit critical section */
     sem_post(sjq->mutex);
-
-    /* Signal that a job is available */
-    sem_post(sjq->empty);
+    sem_delete(sjq->mutex, sem_mutex_label);
+    ipc_jobqueue_delete(sjq->ijq);
+    free(sjq);
+                
+    return NULL;
 }
 
-/*
- * sem_jobqueue_dequeue
- *
- * consumer removes a job
+/* 
+ * TODO: you must implement this function according to the specification in
+ * sem_jobqueue.h
  */
 job_t* sem_jobqueue_dequeue(sem_jobqueue_t* sjq, job_t* dst) {
     if (!sjq)
         return NULL;
 
-    /* Wait until a job exists */
-    sem_wait(sjq->empty);
+    /* Wait for at least one job in the queue */
+    if (sem_wait(sjq->full) == -1)
+        return NULL;
 
     /* Enter critical section */
-    sem_wait(sjq->mutex);
+    if (sem_wait(sjq->mutex) == -1) {
+        /* Undo decrement of full if we failed to get mutex */
+        sem_post(sjq->full);
+        return NULL;
+    }
 
-    /* Critical delay simulation */
-    do_critical_work(sjq->ijq->proc);
+    /* Underlying dequeue */
+    job_t* j = ipc_jobqueue_dequeue(sjq->ijq, dst);
 
-    /* Dequeue */
-    job_t* r = pri_jobqueue_dequeue((pri_jobqueue_t*) sjq->ijq->addr, dst);
-
-    /* Exit critical section */
+    /* Leave critical section */
     sem_post(sjq->mutex);
 
-    /* Signal free slot available */
-    sem_post(sjq->full);
+    if (j) {
+        /* One more empty slot now available */
+        sem_post(sjq->empty);
+    } else {
+        /* Shouldn’t really happen, but keep semaphores consistent */
+        sem_post(sjq->full);
+    }
 
+    return j;
+}
+
+/* 
+ * TODO: you must implement this function according to the specification in
+ * sem_jobqueue.h
+ */
+void sem_jobqueue_enqueue(sem_jobqueue_t* sjq, job_t* job) {
+    if (!sjq || !job)
+        return;
+
+    /* Wait for an empty slot */
+    if (sem_wait(sjq->empty) == -1)
+        return;
+
+    /* Enter critical section */
+    if (sem_wait(sjq->mutex) == -1) {
+        /* Undo decrement of empty if we failed to get mutex */
+        sem_post(sjq->empty);
+        return;
+    }
+
+    /* Underlying enqueue */
+    ipc_jobqueue_enqueue(sjq->ijq, job);
+
+    /* Leave critical section */
+    sem_post(sjq->mutex);
+
+    /* One more full slot */
+    sem_post(sjq->full);
+}
+
+/* 
+ * TODO: you must implement this function according to the specification in
+ * sem_jobqueue.h
+ */
+bool sem_jobqueue_is_empty(sem_jobqueue_t* sjq) {
+    if (!sjq)
+        return true;
+
+    if (sem_wait(sjq->mutex) == -1)
+        return true;
+
+    bool r = ipc_jobqueue_is_empty(sjq->ijq);
+
+    sem_post(sjq->mutex);
     return r;
 }
 
-/*
- * sem_jobqueue_peek
+/* 
+ * TODO: you must implement this function according to the specification in
+ * sem_jobqueue.h
+ */
+bool sem_jobqueue_is_full(sem_jobqueue_t* sjq) {
+    if (!sjq)
+        return true;
+
+    if (sem_wait(sjq->mutex) == -1)
+        return true;
+
+    bool r = ipc_jobqueue_is_full(sjq->ijq);
+
+    sem_post(sjq->mutex);
+    return r;
+}
+
+/* 
+ * TODO: you must implement this function according to the specification in
+ * sem_jobqueue.h
  */
 job_t* sem_jobqueue_peek(sem_jobqueue_t* sjq, job_t* dst) {
     if (!sjq)
         return NULL;
 
-    sem_wait(sjq->mutex);
-    do_critical_work(sjq->ijq->proc);
+    if (sem_wait(sjq->mutex) == -1)
+        return NULL;
 
-    job_t* r = pri_jobqueue_peek((pri_jobqueue_t*) sjq->ijq->addr, dst);
-
-    sem_post(sjq->mutex);
-    return r;
-}
-
-bool sem_jobqueue_is_empty(sem_jobqueue_t* sjq) {
-    if (!sjq)
-        return true;
-
-    sem_wait(sjq->mutex);
-    do_critical_work(sjq->ijq->proc);
-
-    bool r = pri_jobqueue_is_empty((pri_jobqueue_t*) sjq->ijq->addr);
+    job_t* r = ipc_jobqueue_peek(sjq->ijq, dst);
 
     sem_post(sjq->mutex);
     return r;
 }
 
-bool sem_jobqueue_is_full(sem_jobqueue_t* sjq) {
-    if (!sjq)
-        return true;
-
-    sem_wait(sjq->mutex);
-    do_critical_work(sjq->ijq->proc);
-
-    bool r = pri_jobqueue_is_full((pri_jobqueue_t*) sjq->ijq->addr);
-
-    sem_post(sjq->mutex);
-    return r;
-}
-
+/* 
+ * TODO: you must implement this function according to the specification in
+ * sem_jobqueue.h
+ */
 int sem_jobqueue_size(sem_jobqueue_t* sjq) {
     if (!sjq)
         return -1;
 
-    sem_wait(sjq->mutex);
-    do_critical_work(sjq->ijq->proc);
+    if (sem_wait(sjq->mutex) == -1)
+        return -1;
 
-    int r = pri_jobqueue_size((pri_jobqueue_t*) sjq->ijq->addr);
+    int r = ipc_jobqueue_size(sjq->ijq);
 
     sem_post(sjq->mutex);
     return r;
 }
 
+/* 
+ * TODO: you must implement this function according to the specification in
+ * sem_jobqueue.h
+ */
 int sem_jobqueue_space(sem_jobqueue_t* sjq) {
     if (!sjq)
         return -1;
 
-    sem_wait(sjq->mutex);
-    do_critical_work(sjq->ijq->proc);
+    if (sem_wait(sjq->mutex) == -1)
+        return -1;
 
-    int r = pri_jobqueue_space((pri_jobqueue_t*) sjq->ijq->addr);
+    int r = ipc_jobqueue_space(sjq->ijq);
 
     sem_post(sjq->mutex);
     return r;
 }
 
-/*
- * sem_jobqueue_delete
- *
- * Close & unlink semaphores + delete underlying ipc_jobqueue
+/* 
+ * TODO: you must implement this function according to the specification in
+ * sem_jobqueue.h
+ * Hint:
+ * - look at what is allocated and/or opened in sem_jobqueue_new and in what 
+ *      order
  */
 void sem_jobqueue_delete(sem_jobqueue_t* sjq) {
     if (!sjq)
         return;
 
-    /* Close semaphores */
-    sem_close(sjq->mutex);
-    sem_close(sjq->full);
-    sem_close(sjq->empty);
+    /* Delete semaphores in reverse of creation order */
+    sem_delete(sjq->full, sem_full_label);
+    sem_delete(sjq->empty, sem_empty_label);
+    sem_delete(sjq->mutex, sem_mutex_label);
 
-    /* Underlying queue cleanup */
+    /* Delete underlying ipc_jobqueue and free wrapper */
     ipc_jobqueue_delete(sjq->ijq);
-
-    /* Free wrapper */
     free(sjq);
 }
