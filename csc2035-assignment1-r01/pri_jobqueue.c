@@ -7,13 +7,6 @@
 #include "pri_jobqueue.h"
 
 /*
- * Helper: return pointer to the underlying array
- */
-static job_t* qarr(pri_jobqueue_t* q) {
-    return q ? q->jobs : NULL;
-}
-
-/*
  * pri_jobqueue_new
  */
 pri_jobqueue_t* pri_jobqueue_new() {
@@ -31,11 +24,10 @@ void pri_jobqueue_init(pri_jobqueue_t* q) {
     if (!q)
         return;
 
-    q->head = 0;
+    q->buf_size = JOB_BUFFER_SIZE;
     q->size = 0;
 
-    /* Initialise all jobs to empty with priority 0 */
-    for (int i = 0; i < PRI_JOBQUEUE_CAPACITY; i++) {
+    for (int i = 0; i < JOB_BUFFER_SIZE; i++) {
         job_init(&q->jobs[i]);
     }
 }
@@ -55,7 +47,7 @@ bool pri_jobqueue_is_empty(pri_jobqueue_t* q) {
 bool pri_jobqueue_is_full(pri_jobqueue_t* q) {
     if (!q)
         return true;
-    return q->size == PRI_JOBQUEUE_CAPACITY;
+    return q->size == q->buf_size;
 }
 
 /*
@@ -63,7 +55,7 @@ bool pri_jobqueue_is_full(pri_jobqueue_t* q) {
  */
 int pri_jobqueue_size(pri_jobqueue_t* q) {
     if (!q)
-        return -1;
+        return 0;
     return q->size;
 }
 
@@ -72,42 +64,37 @@ int pri_jobqueue_size(pri_jobqueue_t* q) {
  */
 int pri_jobqueue_space(pri_jobqueue_t* q) {
     if (!q)
-        return -1;
-    return PRI_JOBQUEUE_CAPACITY - q->size;
+        return 0;
+    return q->buf_size - q->size;
 }
 
 /*
- * Find index of highest-priority job.
- * Priority 1 is highest. Lower numerical = higher priority.
- * If multiple jobs share priority, earliest (lowest index from head) wins.
+ * Find highest-priority job index
  */
 static int find_best(pri_jobqueue_t* q) {
-    int best_i = -1;
-    unsigned int best_pri = 0;  /* 0 = unused */
+    int best = -1;
+    unsigned int best_pri = 0; // 0 = unused
 
     for (int i = 0; i < q->size; i++) {
-        int idx = (q->head + i) % PRI_JOBQUEUE_CAPACITY;
-        unsigned int pri = q->jobs[idx].priority;
+        unsigned int pri = q->jobs[i].priority;
 
         if (pri == 0)
-            continue;  /* unused slot */
+            continue;
 
-        if (best_i == -1 || pri < best_pri) {
+        if (best == -1 || pri < best_pri) {
+            best = i;
             best_pri = pri;
-            best_i = idx;
         }
     }
 
-    return best_i;
+    return best;
 }
 
 /*
  * pri_jobqueue_peek
  */
 job_t* pri_jobqueue_peek(pri_jobqueue_t* q, job_t* dst) {
-    if (!q)
-        return NULL;
-    if (q->size == 0)
+    if (!q || q->size == 0)
         return NULL;
 
     int best = find_best(q);
@@ -121,35 +108,24 @@ job_t* pri_jobqueue_peek(pri_jobqueue_t* q, job_t* dst) {
  * pri_jobqueue_dequeue
  */
 job_t* pri_jobqueue_dequeue(pri_jobqueue_t* q, job_t* dst) {
-    if (!q)
-        return NULL;
-    if (q->size == 0)
+    if (!q || q->size == 0)
         return NULL;
 
     int best = find_best(q);
     if (best < 0)
         return NULL;
 
-    /* Copy to dst */
-    job_t temp;
-    job_copy(&q->jobs[best], &temp);
+    job_t tmp;
+    job_copy(&q->jobs[best], &tmp);
 
-    /* Remove it by shifting elements to close gap */
-    int last_index = (q->head + q->size - 1) % PRI_JOBQUEUE_CAPACITY;
-
-    /* If best isn't last, shift jobs */
-    while (best != last_index) {
-        int next = (best + 1) % PRI_JOBQUEUE_CAPACITY;
-        q->jobs[best] = q->jobs[next];
-        best = next;
+    // shift left from best+1 onward
+    for (int i = best; i < q->size - 1; i++) {
+        q->jobs[i] = q->jobs[i + 1];
     }
 
-    /* Decrease size */
     q->size--;
 
-    /* head stays same */
-
-    return job_copy(&temp, dst);
+    return job_copy(&tmp, dst);
 }
 
 /*
@@ -159,11 +135,13 @@ void pri_jobqueue_enqueue(pri_jobqueue_t* q, job_t* job) {
     if (!q || !job)
         return;
 
-    if (q->size == PRI_JOBQUEUE_CAPACITY)
+    if (job->priority == 0)
         return;
 
-    int pos = (q->head + q->size) % PRI_JOBQUEUE_CAPACITY;
-    job_copy(job, &q->jobs[pos]);
+    if (q->size == q->buf_size)
+        return;
+
+    job_copy(job, &q->jobs[q->size]); 
     q->size++;
 }
 
