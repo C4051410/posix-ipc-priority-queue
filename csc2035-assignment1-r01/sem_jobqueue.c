@@ -109,75 +109,66 @@ sem_jobqueue_t* sem_jobqueue_new(proc_t* proc) {
     return NULL;
 }
 
-/* 
- * TODO: you must implement this function according to the specification in
- * sem_jobqueue.h
- */
+
 job_t* sem_jobqueue_dequeue(sem_jobqueue_t* sjq, job_t* dst) {
     if (!sjq)
         return NULL;
 
-    /* Wait for at least one job in the queue */
+    
     if (sem_wait(sjq->full) == -1)
         return NULL;
 
-    /* Enter critical section */
+    
     if (sem_wait(sjq->mutex) == -1) {
-        /* Undo decrement of full if we failed to get mutex */
+        
         sem_post(sjq->full);
         return NULL;
     }
 
-    /* Underlying dequeue */
+    
     job_t* j = ipc_jobqueue_dequeue(sjq->ijq, dst);
 
-    /* Leave critical section */
+    
     sem_post(sjq->mutex);
 
     if (j) {
-        /* One more empty slot now available */
+        
         sem_post(sjq->empty);
     } else {
-        /* Shouldn’t really happen, but keep semaphores consistent */
+        
         sem_post(sjq->full);
     }
 
     return j;
 }
 
-/* 
- * TODO: you must implement this function according to the specification in
- * sem_jobqueue.h
- */
+
 void sem_jobqueue_enqueue(sem_jobqueue_t* sjq, job_t* job) {
     if (!sjq || !job)
         return;
 
-    /* Wait for an empty slot */
+    
     if (sem_wait(sjq->empty) == -1)
         return;
 
-    /* Enter critical section */
+    
     if (sem_wait(sjq->mutex) == -1) {
-        /* Undo decrement of empty if we failed to get mutex */
+        
         sem_post(sjq->empty);
         return;
     }
 
-    /* Underlying enqueue */
+    
     ipc_jobqueue_enqueue(sjq->ijq, job);
 
-    /* Leave critical section */
+    
     sem_post(sjq->mutex);
 
-    /* One more full slot */
+    
     sem_post(sjq->full);
 }
 
-/* 
- * TODO: you must implement this function according to the specification in
- * sem_jobqueue.h
- */
+
 bool sem_jobqueue_is_empty(sem_jobqueue_t* sjq) {
     if (!sjq)
         return true;
@@ -191,10 +182,7 @@ bool sem_jobqueue_is_empty(sem_jobqueue_t* sjq) {
     return r;
 }
 
-/* 
- * TODO: you must implement this function according to the specification in
- * sem_jobqueue.h
- */
+
 bool sem_jobqueue_is_full(sem_jobqueue_t* sjq) {
     if (!sjq)
         return true;
@@ -208,10 +196,7 @@ bool sem_jobqueue_is_full(sem_jobqueue_t* sjq) {
     return r;
 }
 
-/* 
- * TODO: you must implement this function according to the specification in
- * sem_jobqueue.h
- */
+
 job_t* sem_jobqueue_peek(sem_jobqueue_t* sjq, job_t* dst) {
     if (!sjq)
         return NULL;
@@ -225,10 +210,7 @@ job_t* sem_jobqueue_peek(sem_jobqueue_t* sjq, job_t* dst) {
     return r;
 }
 
-/* 
- * TODO: you must implement this function according to the specification in
- * sem_jobqueue.h
- */
+
 int sem_jobqueue_size(sem_jobqueue_t* sjq) {
     if (!sjq)
         return -1;
@@ -242,10 +224,7 @@ int sem_jobqueue_size(sem_jobqueue_t* sjq) {
     return r;
 }
 
-/* 
- * TODO: you must implement this function according to the specification in
- * sem_jobqueue.h
- */
+
 int sem_jobqueue_space(sem_jobqueue_t* sjq) {
     if (!sjq)
         return -1;
@@ -259,23 +238,17 @@ int sem_jobqueue_space(sem_jobqueue_t* sjq) {
     return r;
 }
 
-/* 
- * TODO: you must implement this function according to the specification in
- * sem_jobqueue.h
- * Hint:
- * - look at what is allocated and/or opened in sem_jobqueue_new and in what 
- *      order
- */
+
 void sem_jobqueue_delete(sem_jobqueue_t* sjq) {
     if (!sjq)
         return;
 
-    /* Delete semaphores in reverse of creation order */
+    
     sem_delete(sjq->full, sem_full_label);
     sem_delete(sjq->empty, sem_empty_label);
     sem_delete(sjq->mutex, sem_mutex_label);
 
-    /* Delete underlying ipc_jobqueue and free wrapper */
+    
     ipc_jobqueue_delete(sjq->ijq);
     free(sjq);
 }
